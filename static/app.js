@@ -1,6 +1,6 @@
 // Visark dialer — browser softphone logic.
-// Auth: the page itself is behind nginx basic auth, so fetch() to same-origin
-// endpoints carries credentials automatically.
+// Auth: the page is behind a single-user form login; the session cookie rides
+// on same-origin fetch() automatically. A 401 means the session expired.
 
 let device = null;
 let activeCall = null;

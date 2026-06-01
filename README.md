@@ -1,96 +1,118 @@
 # igdruhsil-dialer
 
-Browser-based cold-call softphone for [Visark](https://visark.ai) sales outreach. Make outbound calls and receive inbound callbacks entirely in the browser over WebRTC � no personal phone bridged into the call path.
+Browser-based cold-call softphone for [Visark](https://visark.ai) sales outreach. Make outbound calls and receive inbound calls entirely in the browser over WebRTC — no personal phone bridged into the call path.
 
 Built for the Visark sales sprint: a lightweight dialer layer alongside email, used against manually enriched leads (LinkedIn, Google, etc.) when Apollo phone data is not usable.
 
-**Production URL:** [https://dialer.igdruhsil.com](https://dialer.igdruhsil.com) (nginx basic auth + TLS)
+**Production URL:** [https://dialer.igdruhsil.com](https://dialer.igdruhsil.com) — fronted by a dedicated Cloudflare Tunnel (TLS at Cloudflare's edge), single-user form login.
 
 ## How it works
 
-This is a **WebRTC softphone via Twilio Voice**, not a server-side phone bridge.
+A **WebRTC softphone via Twilio Voice**, not a server-side phone bridge.
 
 **Outbound**
 
-1. User opens the single-page UI and clicks **Dial** with a prospect number.
-2. The browser (Twilio Voice JS SDK) connects using a short-lived access token from the backend.
-3. Twilio hits `/api/twiml/outbound` and receives TwiML to dial the prospect with your Twilio number as caller ID.
-4. Audio flows browser ? prospect over WebRTC.
+1. User signs in, clicks **Go online** (grants mic + unlocks audio), then **Dial** with a prospect number.
+2. The browser (Twilio Voice JS SDK) connects with a short-lived access token from `/api/token`.
+3. Twilio hits the voice handler, which returns TwiML dialing the prospect with the Twilio number as caller ID.
+4. Audio flows browser <-> prospect over WebRTC.
 
 **Inbound**
 
-1. A prospect calls your Twilio number.
-2. Twilio hits `/api/twiml/inbound` and receives TwiML to ring the browser client.
-3. The UI shows an incoming call; the user accepts or rejects.
+1. A prospect calls the Twilio number.
+2. Twilio hits the voice handler, which returns TwiML ringing the browser client.
+3. The UI rings (synthesized ringtone) and shows **Answer / Reject**.
 
-Twilio webhooks are validated with `X-Twilio-Signature`. The UI is protected by HTTP basic auth at the nginx edge (see [deploy/README.md](deploy/README.md)).
+The voice handler detects direction from the call itself (`From=client:...` => outbound, otherwise inbound), so it does the right thing regardless of which URL the TwiML App / number webhook is pointed at — a mis-wired webhook can't loop. Inbound calls are logged the moment they ring and again at hang-up, so **missed calls are recorded** (shown in red).
+
+Twilio webhooks are validated with `X-Twilio-Signature` (the signed URL is rebuilt from `PUBLIC_BASE_URL`, so it survives the tunnel). Everything else is gated by a single-user session login.
 
 ## Stack
 
 | Layer | Choice |
 |-------|--------|
-| Backend | Python / Flask |
-| Voice | Twilio Voice API + `@twilio/voice-sdk` in the browser |
+| Backend | Python / Flask (gunicorn) |
+| Voice | Twilio Voice API + `@twilio/voice-sdk` (browser) |
 | Frontend | Single HTML page, vanilla JS, no framework |
-| Production | gunicorn + nginx + systemd |
+| Auth | Form login + signed session cookie |
+| Ingress | Cloudflare Tunnel (`cloudflared`), TLS at the edge |
+| Runtime | Docker Compose (app + its own cloudflared) |
 
 ## Project layout
 
 ```
-app.py              Flask backend (tokens, TwiML, call log)
-static/             Softphone UI (index.html, app.js, style.css)
+app.py              Flask backend (auth, tokens, TwiML, call/message log)
+static/             UI — index.html, login.html, call-logs.html, app.js, style.css, logo.png
+Dockerfile          App image (gunicorn)
+docker-compose.yml  Dialer app + dedicated cloudflared tunnel
 env.example         Environment variable template
-deploy/             nginx, systemd, and production deploy notes
 requirements.txt    Python dependencies
 ```
 
 ## Local development
 
-1. **Copy env and fill in Twilio credentials**
+```bash
+cp env.example .env          # fill in Twilio creds + BASIC_AUTH_* + SECRET_KEY
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python app.py                # serves on 127.0.0.1:3001
+```
+
+Open `http://localhost:3001`. For real Twilio webhooks locally, use a tunnel (ngrok, etc.) and point your TwiML App / number webhooks at the public URL. Set `TWILIO_VALIDATE=false` for local curl testing without signatures.
+
+## Production deploy (Docker + Cloudflare Tunnel)
+
+The app runs as a self-contained Compose project with its **own** Cloudflare tunnel — no host ports, no nginx, no certbot, isolated from anything else on the box.
+
+1. **Create a dedicated tunnel** in Cloudflare Zero Trust → Networks → Tunnels (type: Docker). Copy the tunnel token into `CLOUDFLARE_TUNNEL_TOKEN` in `.env`. Add a Public Hostname: `dialer.igdruhsil.com` (HTTP) → `http://dialer:3001`.
+
+2. **Configure `.env`** from `env.example`: Twilio creds, `BASIC_AUTH_USER` / `BASIC_AUTH_PASSWORD` (login), `SECRET_KEY` (`python -c "import secrets; print(secrets.token_hex(32))"`), and the tunnel token.
+
+3. **Build and run:**
 
    ```bash
-   cp env.example .env
+   docker compose up -d --build
    ```
 
-   Required variables: `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_KEY`, `TWILIO_API_SECRET`, `TWILIO_TWIML_APP_SID`, `TWILIO_PHONE_NUMBER`, `TWILIO_CLIENT_IDENTITY`, `PUBLIC_BASE_URL`.
+   > `app.py` is baked into the image (not mounted), so backend changes require a rebuild. If a build seems to run stale code: `docker compose build --no-cache dialer && docker compose up -d --force-recreate`. The `static/` and `.env` are mounted live.
 
-2. **Install dependencies**
+4. **Point Twilio at it:**
 
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
+   | Twilio setting | URL | Method |
+   |---|---|---|
+   | Phone Number → "A call comes in" | `https://dialer.igdruhsil.com/api/twiml/inbound` | POST |
+   | Phone Number → "Call status changes" (for inbound logging) | `https://dialer.igdruhsil.com/api/call-status` | POST |
+   | TwiML App → Voice Request URL | `https://dialer.igdruhsil.com/api/twiml/outbound` | POST |
 
-3. **Run the app**
-
-   ```bash
-   flask --app app run --port 3001
-   # or: python app.py
-   ```
-
-4. Open `http://localhost:3001`. For real Twilio webhooks locally, use a tunnel (ngrok, etc.) and point your TwiML App / number webhooks at the public URL. Set `TWILIO_VALIDATE=false` only for local curl testing without signatures.
+   Enable destination countries under Voice → Geographic Permissions.
 
 ## API routes
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `GET` | `/` | Softphone UI |
-| `GET` | `/api/token` | Mint Twilio Voice access token for the browser |
-| `POST` | `/api/twiml/outbound` | TwiML: bridge browser ? prospect (Twilio webhook) |
-| `POST` | `/api/twiml/inbound` | TwiML: ring browser on inbound call (Twilio webhook) |
+| `GET` | `/` | Softphone UI (session-gated) |
+| `GET` / `POST` | `/login` | Login form / submit |
+| `GET` | `/logout` | Clear session |
+| `GET` | `/call-logs` | Full raw call-event log (new tab) |
+| `GET` | `/api/token` | Mint Twilio Voice access token |
+| `POST` | `/api/voice`, `/api/twiml/outbound`, `/api/twiml/inbound` | Voice TwiML — direction auto-detected (Twilio webhook) |
 | `POST` | `/api/call-status` | Call status callbacks (Twilio webhook) |
-| `GET` | `/api/calls` | Recent call log for the UI |
-
-## Production deploy
-
-See **[deploy/README.md](deploy/README.md)** for DNS, TLS, nginx basic auth, Twilio webhook URLs, and the systemd service unit.
+| `POST` | `/api/dial-result` | Inbound dial outcome — answered vs missed (Twilio webhook) |
+| `POST` | `/api/sms/inbound` | Inbound SMS (Twilio webhook) |
+| `GET` | `/api/calls` | Raw call log for the UI |
+| `POST` | `/api/calls/clear` | Clear the call log |
+| `GET` | `/api/messages` | Inbound SMS log for the UI |
 
 ## Security notes
 
-- Never commit `.env` � it holds Twilio secrets.
-- Twilio webhook routes are intentionally outside basic auth; the app validates request signatures instead.
-- Basic auth credentials live in nginx (`htpasswd`), not in application env.
+- Never commit `.env` — it holds Twilio secrets and the tunnel token.
+- Twilio webhook routes are exempt from login; the app validates `X-Twilio-Signature` instead.
+- Login credentials and `SECRET_KEY` live in `.env`; the session cookie is `Secure`, `HttpOnly`, `SameSite=Lax`.
+
+## Out of scope
+
+Outbound SMS (needs A2P 10DLC registration), call recording, transcription, auto-dialing, CRM integration, multi-user, database persistence (call/message logs are in-memory).
 
 ## License
 

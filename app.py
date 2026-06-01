@@ -8,11 +8,11 @@ Routes:
   POST /api/call-status       -> Twilio call status callbacks        (Twilio webhook)
   GET  /api/calls             -> recent-call log for the UI to poll
 
-Auth model: single-user HTTP basic auth, enforced in-app (see require_basic_auth)
-unless BASIC_AUTH_USER is unset — e.g. when you protect the hostname with
-Cloudflare Access at the edge instead. The four Twilio webhooks are exempt from
-basic auth and instead validated via X-Twilio-Signature; the signed URL is
-reconstructed deterministically from PUBLIC_BASE_URL so it works through the
+Auth model: single-user form login with a signed session cookie (see
+require_auth), unless BASIC_AUTH_USER is unset — e.g. when you protect the
+hostname with Cloudflare Access at the edge instead. The Twilio webhooks are
+exempt from login and instead validated via X-Twilio-Signature; the signed URL
+is reconstructed deterministically from PUBLIC_BASE_URL so it works through the
 Cloudflare tunnel regardless of forwarded-proto header behaviour.
 """
 import hmac
@@ -52,8 +52,8 @@ PORT = int(os.environ.get("PORT", "3001"))
 # Set TWILIO_VALIDATE=false for local curl testing (no real Twilio signature).
 VALIDATE = os.environ.get("TWILIO_VALIDATE", "true").lower() != "false"
 
-# Single-user basic auth. Leave BASIC_AUTH_USER unset to disable (e.g. when
-# Cloudflare Access guards the hostname at the edge instead).
+# Single-user login credentials. Leave BASIC_AUTH_USER unset to disable auth
+# (e.g. when Cloudflare Access guards the hostname at the edge instead).
 BASIC_USER = os.environ.get("BASIC_AUTH_USER", "")
 BASIC_PASS = os.environ.get("BASIC_AUTH_PASSWORD", "")
 
@@ -293,7 +293,7 @@ def calls():
 
 @app.route("/api/calls/clear", methods=["POST"])
 def clear_calls():
-    """Wipe the in-memory call log. Basic-auth gated (not a Twilio webhook)."""
+    """Wipe the in-memory call log. Session-gated (not a Twilio webhook)."""
     _calls.clear()
     return ("", 204)
 
@@ -319,7 +319,7 @@ def sms_inbound():
 
 @app.route("/api/messages")
 def messages():
-    """Inbound-message log for the UI (served behind nginx basic auth)."""
+    """Inbound-message log for the UI (session-gated)."""
     return jsonify(list(_messages))
 
 
