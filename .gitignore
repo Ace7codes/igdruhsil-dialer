@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# Runtime data (call/message logs + recordings)
+data/
+
 # Python
 venv/
 __pycache__/

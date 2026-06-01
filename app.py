@@ -16,6 +16,7 @@ is reconstructed deterministically from PUBLIC_BASE_URL so it works through the
 Cloudflare tunnel regardless of forwarded-proto header behaviour.
 """
 import hmac
+import json
 import logging
 import os
 import re
@@ -52,6 +53,18 @@ PORT = int(os.environ.get("PORT", "3001"))
 # Set TWILIO_VALIDATE=false for local curl testing (no real Twilio signature).
 VALIDATE = os.environ.get("TWILIO_VALIDATE", "true").lower() != "false"
 
+# Record call audio in the browser (capture the WebRTC streams, upload the file).
+# Disclose to callers as your local law requires. Set RECORD_CALLS=false to skip.
+RECORD_CALLS = os.environ.get("RECORD_CALLS", "true").lower() != "false"
+
+# Durable storage on a mounted volume so logs/recordings survive restarts.
+DATA_DIR = os.environ.get("DATA_DIR", "data")
+RECORDINGS_DIR = os.path.join(DATA_DIR, "recordings")
+CALLS_FILE = os.path.join(DATA_DIR, "calls.jsonl")
+MESSAGES_FILE = os.path.join(DATA_DIR, "messages.jsonl")
+RECORDINGS_FILE = os.path.join(DATA_DIR, "recordings.jsonl")
+os.makedirs(RECORDINGS_DIR, exist_ok=True)
+
 # Single-user login credentials. Leave BASIC_AUTH_USER unset to disable auth
 # (e.g. when Cloudflare Access guards the hostname at the edge instead).
 BASIC_USER = os.environ.get("BASIC_AUTH_USER", "")
@@ -78,12 +91,15 @@ app.config.update(
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
+    MAX_CONTENT_LENGTH=100 * 1024 * 1024,  # cap recording uploads at 100 MB
 )
 
 _validator = RequestValidator(AUTH_TOKEN)
-# Most-recent-first ring buffers for the UI.
-_calls = deque(maxlen=20)
-_messages = deque(maxlen=50)
+# Most-recent-first in-memory window for the UI; the JSONL files are the durable
+# record (everything is appended there and reloaded on startup).
+_calls = deque(maxlen=200)
+_messages = deque(maxlen=100)
+_recordings = []  # most-recent-first list of {file, direction, number, ...}
 
 
 def normalize_e164(raw):
@@ -97,11 +113,49 @@ def _now_str():
     return datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S %z")
 
 
+def _append_jsonl(path, obj):
+    try:
+        with open(path, "a") as f:
+            f.write(json.dumps(obj) + "\n")
+    except OSError as e:
+        app.logger.warning("persist failed (%s): %s", path, e)
+
+
+def _load_jsonl_tail(path, n):
+    try:
+        with open(path) as f:
+            lines = f.readlines()[-n:]
+        return [json.loads(line) for line in lines if line.strip()]
+    except FileNotFoundError:
+        return []
+    except OSError as e:
+        app.logger.warning("load failed (%s): %s", path, e)
+        return []
+
+
 def _log_call(event):
-    """Append a call event to the in-memory log (timestamps if not provided)."""
+    """Record a call event: in-memory window + durable JSONL."""
     event.setdefault("timestamp", _now_str())
     app.logger.info("call %s", event)
     _calls.appendleft(event)
+    _append_jsonl(CALLS_FILE, event)
+
+
+def _log_message(msg):
+    """Record an inbound SMS: in-memory window + durable JSONL."""
+    msg.setdefault("timestamp", _now_str())
+    app.logger.info("sms-inbound %s", msg)
+    _messages.appendleft(msg)
+    _append_jsonl(MESSAGES_FILE, msg)
+
+
+# Repopulate the in-memory window from disk so history survives restarts.
+for _ev in _load_jsonl_tail(CALLS_FILE, _calls.maxlen):
+    _calls.appendleft(_ev)
+for _ev in _load_jsonl_tail(MESSAGES_FILE, _messages.maxlen):
+    _messages.appendleft(_ev)
+for _rec in _load_jsonl_tail(RECORDINGS_FILE, 500):
+    _recordings.insert(0, _rec)  # file is oldest-first -> list becomes newest-first
 
 
 @app.before_request
@@ -192,7 +246,8 @@ def token():
         identity=CLIENT_IDENTITY, ttl=TOKEN_TTL,
     )
     access.add_grant(grant)
-    return jsonify(token=access.to_jwt(), identity=CLIENT_IDENTITY, ttl=TOKEN_TTL)
+    return jsonify(token=access.to_jwt(), identity=CLIENT_IDENTITY, ttl=TOKEN_TTL,
+                   record=RECORD_CALLS)
 
 
 @app.route("/api/voice", methods=["POST"])
@@ -280,8 +335,8 @@ def call_status():
         "duration": request.form.get("CallDuration"),
         "timestamp": request.form.get("Timestamp"),
     }
-    app.logger.info("call-status %s", event)
-    _calls.appendleft(event)
+    event["timestamp"] = event["timestamp"] or _now_str()
+    _log_call(event)
     return ("", 204)
 
 
@@ -291,10 +346,51 @@ def calls():
     return jsonify(list(_calls))
 
 
+@app.route("/api/recordings")
+def recordings_index():
+    """List of saved call recordings (newest first), for the call-logs view."""
+    return jsonify(_recordings)
+
+
+@app.route("/api/recordings/upload", methods=["POST"])
+def upload_recording():
+    """Store a browser-recorded call audio blob (session-gated)."""
+    f = request.files.get("file")
+    if not f:
+        return ("no file", 400)
+    ext = {"audio/webm": "webm", "audio/ogg": "ogg",
+           "audio/mp4": "mp4", "video/webm": "webm"}.get(f.mimetype, "webm")
+    rec_id = secrets.token_hex(8)
+    fname = f"{rec_id}.{ext}"
+    f.save(os.path.join(RECORDINGS_DIR, fname))
+    rec = {
+        "id": rec_id,
+        "file": fname,
+        "direction": request.form.get("direction", ""),
+        "number": request.form.get("number", ""),
+        "duration": request.form.get("duration", ""),
+        "timestamp": _now_str(),
+    }
+    _recordings.insert(0, rec)
+    _append_jsonl(RECORDINGS_FILE, rec)
+    app.logger.info("recording uploaded %s", rec)
+    return jsonify(rec), 201
+
+
+@app.route("/recordings/<path:fname>")
+def get_recording(fname):
+    """Serve a saved recording file (session-gated)."""
+    return send_from_directory(RECORDINGS_DIR, fname)
+
+
 @app.route("/api/calls/clear", methods=["POST"])
 def clear_calls():
-    """Wipe the in-memory call log. Session-gated (not a Twilio webhook)."""
+    """Wipe the call log (memory + disk). Session-gated (not a Twilio webhook)."""
     _calls.clear()
+    try:
+        open(CALLS_FILE, "w").close()
+    except OSError as e:
+        app.logger.warning("clear failed: %s", e)
     return ("", 204)
 
 
@@ -306,14 +402,12 @@ def sms_inbound():
     Receiving SMS does not require A2P 10DLC; sending does, so there is no
     outbound send endpoint yet. We return empty TwiML (no auto-reply).
     """
-    msg = {
+    _log_message({
         "from": request.form.get("From"),
         "to": request.form.get("To"),
         "body": request.form.get("Body"),
         "sid": request.form.get("MessageSid"),
-    }
-    app.logger.info("sms-inbound %s", msg)
-    _messages.appendleft(msg)
+    })
     return str(MessagingResponse()), 200, {"Content-Type": "text/xml"}
 
 

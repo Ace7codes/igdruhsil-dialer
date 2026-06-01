@@ -17,8 +17,20 @@
   </header>
 
   <section>
-    <p class="muted">Full raw event log (every status transition, both legs). The
-      main dialer page shows the de-duplicated summary.</p>
+    <h2>Recordings</h2>
+    <p class="muted">Captured in the browser over the call's audio channel.</p>
+    <table>
+      <thead>
+        <tr><th>Direction</th><th>Number</th><th>Dur (s)</th><th>Time</th><th>Audio</th></tr>
+      </thead>
+      <tbody id="rec-body"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Raw call events</h2>
+    <p class="muted">Every status transition, both legs. The main page shows the
+      de-duplicated summary.</p>
     <table>
       <thead>
         <tr><th>Dir</th><th>Number</th><th>Status</th><th>Dur</th><th>Time</th></tr>
@@ -28,30 +40,52 @@
   </section>
 
   <script>
-    const body = document.getElementById("logs-body");
+    const logsBody = document.getElementById("logs-body");
+    const recBody = document.getElementById("rec-body");
+    const td = (t) => { const e = document.createElement("td"); e.textContent = t; return e; };
 
-    async function load() {
+    async function loadLogs() {
       let rows;
       try { rows = await fetch("/api/calls").then((r) => r.json()); } catch { return; }
-      body.innerHTML = "";
+      logsBody.innerHTML = "";
       for (const c of rows) {
-        const tr = document.createElement("tr");
-        const td = (t) => { const e = document.createElement("td"); e.textContent = t; return e; };
         const dir = (c.direction || "").includes("inbound") ? "in" : "out";
         const num = dir === "in" ? (c.from || "") : (c.to || "");
+        const tr = document.createElement("tr");
         tr.append(td(dir), td(num), td(c.status || ""), td(c.duration || ""), td(c.timestamp || ""));
-        body.appendChild(tr);
+        logsBody.appendChild(tr);
       }
     }
 
+    async function loadRecordings() {
+      let recs;
+      try { recs = await fetch("/api/recordings").then((r) => r.json()); } catch { return; }
+      recBody.innerHTML = "";
+      for (const r of recs) {
+        const tr = document.createElement("tr");
+        const dir = (r.direction || "").includes("in") ? "Received" : "Called";
+        const audioCell = document.createElement("td");
+        const a = document.createElement("audio");
+        a.controls = true;
+        a.preload = "none";
+        a.src = "/recordings/" + r.file;
+        a.style.height = "30px";
+        audioCell.appendChild(a);
+        tr.append(td(dir), td(r.number || ""), td(r.duration || ""), td(r.timestamp || ""), audioCell);
+        recBody.appendChild(tr);
+      }
+    }
+
+    function refresh() { loadLogs(); loadRecordings(); }
+
     document.getElementById("clear-btn").onclick = async () => {
-      if (!confirm("Clear the entire call log?")) return;
+      if (!confirm("Clear the call-event log? (Recordings are kept.)")) return;
       await fetch("/api/calls/clear", { method: "POST" });
-      load();
+      refresh();
     };
 
-    load();
-    setInterval(load, 5000);
+    refresh();
+    setInterval(refresh, 5000);
   </script>
 </body>
 </html>

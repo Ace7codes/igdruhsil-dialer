@@ -13,6 +13,8 @@ services:
       - ./.env:/app/.env:ro
       # Serve the live frontend so UI tweaks need only a restart, not a rebuild.
       - ./static:/app/static:ro
+      # Durable storage for call/message logs + recordings (survives restarts).
+      - ./data:/app/data
     # No `ports:` — not published to the host. Reached only by cloudflared below,
     # over this project's default network, as http://dialer:3001.
 

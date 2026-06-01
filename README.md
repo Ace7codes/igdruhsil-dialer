@@ -25,6 +25,8 @@ A **WebRTC softphone via Twilio Voice**, not a server-side phone bridge.
 
 The voice handler detects direction from the call itself (`From=client:...` => outbound, otherwise inbound), so it does the right thing regardless of which URL the TwiML App / number webhook is pointed at — a mis-wired webhook can't loop. Inbound calls are logged the moment they ring and again at hang-up, so **missed calls are recorded** (shown in red).
 
+**Recording:** while a call is connected the browser mixes the local + remote WebRTC audio (`MediaRecorder` over Web Audio) and uploads the file to the server on hang-up — captured over the channel in-browser, no Twilio recording fee. Toggle with `RECORD_CALLS`. Logs and recordings persist to a `./data` volume so they survive restarts.
+
 Twilio webhooks are validated with `X-Twilio-Signature` (the signed URL is rebuilt from `PUBLIC_BASE_URL`, so it survives the tunnel). Everything else is gated by a single-user session login.
 
 ## Stack
@@ -103,6 +105,9 @@ The app runs as a self-contained Compose project with its **own** Cloudflare tun
 | `GET` | `/api/calls` | Raw call log for the UI |
 | `POST` | `/api/calls/clear` | Clear the call log |
 | `GET` | `/api/messages` | Inbound SMS log for the UI |
+| `GET` | `/api/recordings` | Saved call recordings (browser-captured) |
+| `POST` | `/api/recordings/upload` | Upload a browser-recorded call (session-gated) |
+| `GET` | `/recordings/<file>` | Stream/download a recording (session-gated) |
 
 ## Security notes
 
@@ -112,7 +117,7 @@ The app runs as a self-contained Compose project with its **own** Cloudflare tun
 
 ## Out of scope
 
-Outbound SMS (needs A2P 10DLC registration), call recording, transcription, auto-dialing, CRM integration, multi-user, database persistence (call/message logs are in-memory).
+Outbound SMS (needs A2P 10DLC registration), transcription, auto-dialing, CRM integration, multi-user. Logs and recordings persist to JSONL/files on a `./data` volume — no database, which is fine for a single user.
 
 ## License
 

@@ -63,6 +63,84 @@ function stopRinging() {
   if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
 }
 
+// --- Call recording: capture the WebRTC streams in the browser, mix them
+// through Web Audio, and upload the file on hang-up. ---
+let recordEnabled = false;
+let mediaRecorder = null;
+let recChunks = [];
+let recStartedAt = 0;
+let currentCallMeta = {};
+
+function pickRecMime() {
+  const cands = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+  for (const m of cands) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";
+}
+
+function startRecording(call, attempt = 0) {
+  if (!recordEnabled || !window.MediaRecorder) return;
+  if (mediaRecorder) return;                              // already recording
+  if (call.status && call.status() === "closed") return; // call ended while waiting
+
+  const remote = call.getRemoteStream && call.getRemoteStream();
+  const local = call.getLocalStream && call.getLocalStream();
+
+  // The remote stream isn't always attached the instant 'accept' fires; retry
+  // briefly (up to ~3s) before falling back to local-only.
+  if (!remote && attempt < 10) {
+    setTimeout(() => startRecording(call, attempt + 1), 300);
+    return;
+  }
+  if (!remote) console.warn("no remote stream after retries; recording local only");
+  if (!remote && !local) { console.warn("no media streams to record"); return; }
+
+  try {
+    unlockAudio();
+    // Mix both legs into one track (we tap the streams, we don't reroute them).
+    const dest = audioCtx.createMediaStreamDestination();
+    if (remote) audioCtx.createMediaStreamSource(remote).connect(dest);
+    if (local) audioCtx.createMediaStreamSource(local).connect(dest);
+    recChunks = [];
+    const mime = pickRecMime();
+    mediaRecorder = mime
+      ? new MediaRecorder(dest.stream, { mimeType: mime })
+      : new MediaRecorder(dest.stream);
+    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+    mediaRecorder.start(1000);
+    recStartedAt = Date.now();
+  } catch (e) {
+    console.error("recording start failed", e);
+    mediaRecorder = null;
+  }
+}
+
+function stopRecording() {
+  if (!mediaRecorder) return;
+  const mr = mediaRecorder;
+  mediaRecorder = null;
+  if (mr.state === "inactive") return;
+  const meta = { ...currentCallMeta, duration: Math.round((Date.now() - recStartedAt) / 1000) };
+  mr.onstop = () => {
+    const blob = new Blob(recChunks, { type: mr.mimeType || "audio/webm" });
+    recChunks = [];
+    uploadRecording(blob, meta);
+  };
+  try { mr.stop(); } catch (e) { console.error("recording stop failed", e); }
+}
+
+async function uploadRecording(blob, meta) {
+  if (!blob || !blob.size) return;
+  const fd = new FormData();
+  fd.append("file", blob, "recording");
+  fd.append("direction", meta.direction || "");
+  fd.append("number", meta.number || "");
+  fd.append("duration", String(meta.duration || ""));
+  try { await fetch("/api/recordings/upload", { method: "POST", body: fd }); }
+  catch (e) { console.error("recording upload failed", e); }
+}
+
 function fmt(secs) {
   const m = String(Math.floor(secs / 60)).padStart(2, "0");
   const s = String(secs % 60).padStart(2, "0");
@@ -101,6 +179,7 @@ function showCallPanel({ who, incoming }) {
 
 function clearCallPanel() {
   stopRinging();
+  stopRecording();
   stopTimer();
   hide($("call-panel"));
   show($("dial-panel"));
@@ -113,6 +192,7 @@ function wireCall(call) {
   activeCall = call;
   call.on("accept", () => {
     stopRinging();
+    startRecording(call);
     setStatus("on-call");
     hide($("accept-btn"));
     hide($("reject-btn"));
@@ -148,7 +228,7 @@ async function fetchToken() {
     window.location.href = "/login";   // session expired → sign in again
     return null;
   }
-  return (await res.json()).token;
+  return res.json();   // { token, identity, ttl, record }
 }
 
 async function initDevice() {
@@ -166,18 +246,19 @@ async function initDevice() {
     return;
   }
 
-  let token;
+  let data;
   try {
-    token = await fetchToken();
+    data = await fetchToken();
   } catch (e) {
     console.error("token fetch failed", e);
     setStatus("offline");
     if (goBtn) goBtn.disabled = false;
     return;
   }
-  if (!token) { if (goBtn) goBtn.disabled = false; return; }
+  if (!data) { if (goBtn) goBtn.disabled = false; return; }
+  recordEnabled = !!data.record;
 
-  device = new Twilio.Device(token, { codecPreferences: ["opus", "pcmu"], logLevel: "warn" });
+  device = new Twilio.Device(data.token, { codecPreferences: ["opus", "pcmu"], logLevel: "warn" });
   // We play our own ringtone (more reliable than the SDK's, which depends on
   // output-device enumeration). Disable the SDK's to avoid a double ring.
   try { device.audio.incoming(false); } catch (e) { /* older SDK */ }
@@ -201,12 +282,13 @@ async function initDevice() {
 
   // Refresh the token before it expires.
   device.on("tokenWillExpire", async () => {
-    const fresh = await fetchToken();
-    if (fresh) device.updateToken(fresh);
+    const data = await fetchToken();
+    if (data) device.updateToken(data.token);
   });
 
   device.on("incoming", (call) => {
     const from = call.parameters.From || "unknown";
+    currentCallMeta = { direction: "inbound", number: from };
     showCallPanel({ who: `Incoming: ${from}`, incoming: true });
     setStatus("ringing");
     startRinging();
@@ -221,6 +303,7 @@ async function initDevice() {
 async function dial() {
   const to = $("number").value.trim();
   if (!to || !device) return;
+  currentCallMeta = { direction: "outbound", number: to };
   showCallPanel({ who: `Calling: ${to}`, incoming: false });
   setStatus("connecting");
   const call = await device.connect({ params: { To: to } });
