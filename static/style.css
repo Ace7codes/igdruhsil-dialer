@@ -1,0 +1,39 @@
+* { box-sizing: border-box; }
+body {
+  font-family: -apple-system, system-ui, sans-serif;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  color: #1a1a1a;
+}
+header { display: flex; align-items: center; justify-content: space-between; }
+.brand { display: flex; align-items: center; gap: 0.6rem; }
+.logo { height: 36px; width: auto; display: block; }
+h1 { font-size: 1.4rem; margin: 0; }
+h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; }
+
+.status { display: flex; align-items: center; gap: 0.4rem; font-size: 0.85rem; text-transform: capitalize; }
+.status .dot { width: 10px; height: 10px; border-radius: 50%; background: #aaa; }
+.status.ready .dot { background: #2ecc71; }
+.status.on-call .dot { background: #3498db; }
+.status.ringing .dot { background: #f1c40f; }
+.status.connecting .dot { background: #f39c12; }
+.status.offline .dot { background: #e74c3c; }
+
+section { margin-top: 1rem; }
+#dial-panel { display: flex; gap: 0.5rem; }
+input[type="tel"] { flex: 1; padding: 0.6rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 6px; }
+button { padding: 0.6rem 1rem; font-size: 0.95rem; border: 0; border-radius: 6px; background: #2c3e50; color: #fff; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: default; }
+button.green { background: #27ae60; }
+button.red { background: #c0392b; }
+
+#call-panel { border: 1px solid #ddd; border-radius: 8px; padding: 1rem; }
+#call-info { display: flex; justify-content: space-between; font-size: 1.1rem; margin-bottom: 0.75rem; }
+#call-actions { display: flex; gap: 0.5rem; }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; }
+th { color: #777; font-weight: 600; }
+
+.hidden { display: none; }

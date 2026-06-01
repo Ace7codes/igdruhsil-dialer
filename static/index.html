@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Visark Dialer</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="apple-touch-icon" href="/static/logo.png" />
+  <!-- Twilio Voice JS SDK v2. Bump the version if this 404s. -->
+  <script src="https://sdk.twilio.com/js/voice/releases/2.12.4/twilio.min.js"></script>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="/static/logo.png" class="logo" alt="Visark" />
+      <h1>Visark Dialer</h1>
+    </div>
+    <div id="status" class="status offline">
+      <span class="dot"></span><span id="status-text">offline</span>
+    </div>
+  </header>
+
+  <section id="dial-panel">
+    <input id="number" type="tel" placeholder="+1 415 555 0123 (E.164)" autocomplete="off" />
+    <button id="dial-btn" disabled>Dial</button>
+  </section>
+
+  <section id="call-panel" class="hidden">
+    <div id="call-info">
+      <span id="call-who">—</span>
+      <span id="call-timer">00:00</span>
+    </div>
+    <div id="call-actions">
+      <button id="accept-btn" class="hidden green">Answer</button>
+      <button id="reject-btn" class="hidden red">Reject</button>
+      <button id="hangup-btn" class="hidden red">Hang up</button>
+      <button id="mute-btn" class="hidden">Mute</button>
+    </div>
+  </section>
+
+  <section id="recent">
+    <h2>Recent calls</h2>
+    <table>
+      <thead>
+        <tr><th>Dir</th><th>Number</th><th>Status</th><th>Dur</th><th>Time</th></tr>
+      </thead>
+      <tbody id="recent-body"></tbody>
+    </table>
+  </section>
+
+  <section id="messages">
+    <h2>Inbound messages</h2>
+    <table>
+      <thead>
+        <tr><th>From</th><th>Message</th></tr>
+      </thead>
+      <tbody id="messages-body"></tbody>
+    </table>
+  </section>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

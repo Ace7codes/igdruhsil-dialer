@@ -1,0 +1,19 @@
+# Environment — real secrets live here, never commit
+.env
+.env.local
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+
+# IDE
+CLAUDE.md
+
+
+# Project sspecific
+logo.png
