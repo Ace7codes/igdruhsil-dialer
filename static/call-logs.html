@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Call Logs — Visark Dialer</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <img src="/static/logo.png" class="logo" alt="Visark" />
+      <h1>Call Logs</h1>
+    </div>
+    <button id="clear-btn" class="red">Clear log</button>
+  </header>
+
+  <section>
+    <p class="muted">Full raw event log (every status transition, both legs). The
+      main dialer page shows the de-duplicated summary.</p>
+    <table>
+      <thead>
+        <tr><th>Dir</th><th>Number</th><th>Status</th><th>Dur</th><th>Time</th></tr>
+      </thead>
+      <tbody id="logs-body"></tbody>
+    </table>
+  </section>
+
+  <script>
+    const body = document.getElementById("logs-body");
+
+    async function load() {
+      let rows;
+      try { rows = await fetch("/api/calls").then((r) => r.json()); } catch { return; }
+      body.innerHTML = "";
+      for (const c of rows) {
+        const tr = document.createElement("tr");
+        const td = (t) => { const e = document.createElement("td"); e.textContent = t; return e; };
+        const dir = (c.direction || "").includes("inbound") ? "in" : "out";
+        const num = dir === "in" ? (c.from || "") : (c.to || "");
+        tr.append(td(dir), td(num), td(c.status || ""), td(c.duration || ""), td(c.timestamp || ""));
+        body.appendChild(tr);
+      }
+    }
+
+    document.getElementById("clear-btn").onclick = async () => {
+      if (!confirm("Clear the entire call log?")) return;
+      await fetch("/api/calls/clear", { method: "POST" });
+      load();
+    };
+
+    load();
+    setInterval(load, 5000);
+  </script>
+</body>
+</html>

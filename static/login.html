@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign in — Visark Dialer</title>
+  <link rel="icon" type="image/png" href="/static/logo.png" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="login-wrap">
+    <img src="/static/logo.png" class="logo" alt="Visark" />
+    <h1>Visark Dialer</h1>
+    <form method="POST" action="/login" class="login-form">
+      <input name="username" type="text" placeholder="Email" autocomplete="username" autofocus required />
+      <input name="password" type="password" placeholder="Password" autocomplete="current-password" required />
+      <button type="submit">Sign in</button>
+      <p id="err" class="login-err hidden">Wrong email or password.</p>
+    </form>
+  </div>
+  <script>
+    if (new URLSearchParams(location.search).has("error")) {
+      document.getElementById("err").classList.remove("hidden");
+    }
+  </script>
+</body>
+</html>

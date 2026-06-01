@@ -19,6 +19,50 @@ function setStatus(state) {
 function show(el) { el.classList.remove("hidden"); }
 function hide(el) { el.classList.add("hidden"); }
 
+// --- Ringtone: synthesized dual-tone ring (no audio file). Web Audio needs a
+// prior user gesture, so we create/resume the context on any click. ---
+let audioCtx = null;
+let ringTimer = null;
+
+function unlockAudio() {
+  if (!audioCtx) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) audioCtx = new Ctx();
+  }
+  if (audioCtx && audioCtx.state === "suspended") audioCtx.resume();
+}
+window.addEventListener("click", unlockAudio);
+
+function ringBurst() {
+  if (!audioCtx || audioCtx.state !== "running") return;
+  const now = audioCtx.currentTime;
+  const gain = audioCtx.createGain();
+  gain.gain.value = 0.0001;
+  gain.connect(audioCtx.destination);
+  [440, 480].forEach((f) => {            // classic North-American ring pair
+    const osc = audioCtx.createOscillator();
+    osc.frequency.value = f;
+    osc.connect(gain);
+    osc.start(now);
+    osc.stop(now + 2);                    // 2s of tone
+  });
+  // soft envelope so it doesn't click on/off
+  gain.gain.exponentialRampToValueAtTime(0.18, now + 0.05);
+  gain.gain.setValueAtTime(0.18, now + 1.9);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 2);
+}
+
+function startRinging() {
+  unlockAudio();
+  if (ringTimer) return;
+  ringBurst();
+  ringTimer = setInterval(ringBurst, 6000);  // 2s ring + 4s silence cadence
+}
+
+function stopRinging() {
+  if (ringTimer) { clearInterval(ringTimer); ringTimer = null; }
+}
+
 function fmt(secs) {
   const m = String(Math.floor(secs / 60)).padStart(2, "0");
   const s = String(secs % 60).padStart(2, "0");
@@ -56,6 +100,7 @@ function showCallPanel({ who, incoming }) {
 }
 
 function clearCallPanel() {
+  stopRinging();
   stopTimer();
   hide($("call-panel"));
   show($("dial-panel"));
@@ -67,6 +112,7 @@ function clearCallPanel() {
 function wireCall(call) {
   activeCall = call;
   call.on("accept", () => {
+    stopRinging();
     setStatus("on-call");
     hide($("accept-btn"));
     hide($("reject-btn"));
@@ -80,38 +126,93 @@ function wireCall(call) {
   call.on("error", (e) => { console.error("call error", e); setStatus("ready"); clearCallPanel(); });
 }
 
-async function initDevice() {
-  setStatus("connecting");
-  let token;
+async function ensureMicAccess() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    console.error("getUserMedia unavailable — needs a secure (HTTPS) context");
+    return false;
+  }
   try {
-    ({ token } = await fetch("/api/token").then((r) => r.json()));
+    // Triggers the browser's mic permission prompt and unlocks device labels.
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    stream.getTracks().forEach((t) => t.stop());
+    return true;
   } catch (e) {
-    console.error("token fetch failed", e);
+    console.error("microphone access denied/unavailable", e);
+    return false;
+  }
+}
+
+async function fetchToken() {
+  const res = await fetch("/api/token", { cache: "no-store" });
+  if (res.status === 401) {
+    window.location.href = "/login";   // session expired → sign in again
+    return null;
+  }
+  return (await res.json()).token;
+}
+
+async function initDevice() {
+  unlockAudio();                         // this "Go online" click is our audio gesture
+  const goBtn = $("go-online-btn");
+  if (goBtn) goBtn.disabled = true;
+  setStatus("connecting");
+
+  // Calls need a mic — demand it up front so you can't sit at "ready" with
+  // audio silently blocked.
+  if (!(await ensureMicAccess())) {
     setStatus("offline");
+    statusText.textContent = "allow mic + retry";
+    if (goBtn) goBtn.disabled = false;
     return;
   }
 
-  device = new Twilio.Device(token, { codecPreferences: ["opus", "pcmu"], logLevel: "warn" });
+  let token;
+  try {
+    token = await fetchToken();
+  } catch (e) {
+    console.error("token fetch failed", e);
+    setStatus("offline");
+    if (goBtn) goBtn.disabled = false;
+    return;
+  }
+  if (!token) { if (goBtn) goBtn.disabled = false; return; }
 
-  device.on("registered", () => { setStatus("ready"); $("dial-btn").disabled = false; });
-  device.on("unregistered", () => setStatus("offline"));
-  device.on("error", (e) => { console.error("device error", e); setStatus("offline"); });
+  device = new Twilio.Device(token, { codecPreferences: ["opus", "pcmu"], logLevel: "warn" });
+  // We play our own ringtone (more reliable than the SDK's, which depends on
+  // output-device enumeration). Disable the SDK's to avoid a double ring.
+  try { device.audio.incoming(false); } catch (e) { /* older SDK */ }
+
+  device.on("registered", () => {
+    setStatus("ready");
+    $("dial-btn").disabled = false;
+    hide($("connect-panel"));
+  });
+  device.on("unregistered", () => {
+    setStatus("offline");
+    show($("connect-panel"));
+    if (goBtn) goBtn.disabled = false;
+  });
+  device.on("error", (e) => {
+    console.error("device error", e);
+    setStatus("offline");
+    show($("connect-panel"));
+    if (goBtn) goBtn.disabled = false;
+  });
 
   // Refresh the token before it expires.
   device.on("tokenWillExpire", async () => {
-    try {
-      const { token: fresh } = await fetch("/api/token").then((r) => r.json());
-      device.updateToken(fresh);
-    } catch (e) { console.error("token refresh failed", e); }
+    const fresh = await fetchToken();
+    if (fresh) device.updateToken(fresh);
   });
 
   device.on("incoming", (call) => {
     const from = call.parameters.From || "unknown";
     showCallPanel({ who: `Incoming: ${from}`, incoming: true });
     setStatus("ringing");
+    startRinging();
     wireCall(call);
-    $("accept-btn").onclick = () => call.accept();
-    $("reject-btn").onclick = () => call.reject();
+    $("accept-btn").onclick = () => call.accept();   // stops ring via accept handler
+    $("reject-btn").onclick = () => call.reject();   // stops ring via clearCallPanel
   });
 
   await device.register();
@@ -133,13 +234,24 @@ async function loadRecent() {
   } catch { return; }
   const body = $("recent-body");
   body.innerHTML = "";
+  // Collapse the raw event stream to one row per call: rows are most-recent
+  // first, so the first time we see a call_sid is its latest status.
+  const seen = new Set();
   for (const c of rows) {
+    if (!c.call_sid || seen.has(c.call_sid)) continue;
+    seen.add(c.call_sid);
+    const inbound = (c.direction || "").includes("inbound");
+    const number = inbound ? c.from : c.to;
+    if (!number || number.startsWith("client:")) continue;  // hide internal browser leg
+    const td = (t) => { const e = document.createElement("td"); e.textContent = t; return e; };
+    const dirCell = td(inbound ? "Received" : "Called");
+    dirCell.className = inbound ? "dir-in" : "dir-out";
+    const statusCell = td(c.status || "");
+    if (["missed", "no-answer", "busy", "failed"].includes(c.status)) {
+      statusCell.className = "missed";
+    }
     const tr = document.createElement("tr");
-    const dir = (c.direction || "").includes("inbound") ? "in" : "out";
-    const num = dir === "in" ? (c.from || "") : (c.to || "");
-    tr.innerHTML =
-      `<td>${dir}</td><td>${num}</td><td>${c.status || ""}</td>` +
-      `<td>${c.duration || ""}</td><td>${c.timestamp || ""}</td>`;
+    tr.append(dirCell, td(number), statusCell, td(c.timestamp || ""));
     body.appendChild(tr);
   }
 }
@@ -172,7 +284,7 @@ $("mute-btn").onclick = () => {
 };
 $("number").addEventListener("keydown", (e) => { if (e.key === "Enter") dial(); });
 
-initDevice();
+$("go-online-btn").onclick = initDevice;
 loadRecent();
 loadMessages();
 setInterval(loadRecent, 5000);

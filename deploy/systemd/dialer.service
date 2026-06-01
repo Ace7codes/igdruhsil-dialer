@@ -19,10 +19,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=dialer
-Group=dialer
-WorkingDirectory=/opt/igdruhsil-dialer
-ExecStart=/opt/igdruhsil-dialer/venv/bin/gunicorn --workers 1 --threads 4 --bind 127.0.0.1:3001 app:app
+User=visark
+Group=visark
+WorkingDirectory=/opt/dialer
+ExecStart=/opt/dialer/venv/bin/gunicorn --workers 1 --threads 4 --bind 127.0.0.1:3001 app:app
 
 # Restart on crash AND survive reboots (enable the unit — see README)
 Restart=always

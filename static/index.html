@@ -6,8 +6,8 @@
   <title>Visark Dialer</title>
   <link rel="icon" type="image/png" href="/static/logo.png" />
   <link rel="apple-touch-icon" href="/static/logo.png" />
-  <!-- Twilio Voice JS SDK v2. Bump the version if this 404s. -->
-  <script src="https://sdk.twilio.com/js/voice/releases/2.12.4/twilio.min.js"></script>
+  <!-- Twilio Voice JS SDK v2 (via jsDelivr; sdk.twilio.com 403s direct loads). -->
+  <script src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.18.3/dist/twilio.min.js"></script>
   <link rel="stylesheet" href="/static/style.css" />
 </head>
 <body>
@@ -20,6 +20,11 @@
       <span class="dot"></span><span id="status-text">offline</span>
     </div>
   </header>
+
+  <section id="connect-panel">
+    <button id="go-online-btn" class="green">Go online</button>
+    <span class="muted">Connect your softphone — enables mic &amp; ringtone.</span>
+  </section>
 
   <section id="dial-panel">
     <input id="number" type="tel" placeholder="+1 415 555 0123 (E.164)" autocomplete="off" />
@@ -40,10 +45,13 @@
   </section>
 
   <section id="recent">
-    <h2>Recent calls</h2>
+    <div class="section-head">
+      <h2>Call history</h2>
+      <a href="/call-logs" target="_blank" rel="noopener">Full call logs ↗</a>
+    </div>
     <table>
       <thead>
-        <tr><th>Dir</th><th>Number</th><th>Status</th><th>Dur</th><th>Time</th></tr>
+        <tr><th>Direction</th><th>Number</th><th>Status</th><th>When</th></tr>
       </thead>
       <tbody id="recent-body"></tbody>
     </table>
